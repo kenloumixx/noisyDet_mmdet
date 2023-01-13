@@ -120,7 +120,7 @@ class BBoxHead(BaseModule):
         return cls_score, bbox_pred
 
     def _get_target_single(self, pos_bboxes, neg_bboxes, pos_gt_bboxes,
-                           pos_gt_labels, gmm_labels, cfg):
+                           pos_gt_labels, pos_gmm_labels, cfg, unsup):
         """Calculate the ground truth for proposals in the single image
         according to the sampling results.
 
@@ -165,24 +165,46 @@ class BBoxHead(BaseModule):
         label_weights = pos_bboxes.new_zeros(num_samples)
         bbox_targets = pos_bboxes.new_zeros(num_samples, 4)
         bbox_weights = pos_bboxes.new_zeros(num_samples, 4)
-        
-        pos_gt_ids = torch.where(gmm_labels==True)  # 아하.. 엮여있는 gmm label을 뽑았어야 함.. 아... 기분최고...   -> 하지만 이거를 구할 수가 있음. 
 
-        if num_pos > 0:
-            labels[pos_gt_ids] = pos_gt_labels[gmm_labels]
-            pos_weight = 1.0 if cfg.pos_weight <= 0 else cfg.pos_weight
-            label_weights[pos_gt_ids] = pos_weight
-            if not self.reg_decoded_bbox:
-                pos_bbox_targets = self.bbox_coder.encode(
-                    pos_bboxes, pos_gt_bboxes)
-            else:
-                # When the regression loss (e.g. `IouLoss`, `GIouLoss`)
-                # is applied directly on the decoded bounding boxes, both
-                # the predicted boxes and regression targets should be with
-                # absolute coordinate format.
-                pos_bbox_targets = pos_gt_bboxes
-            bbox_targets[pos_gt_ids] = pos_bbox_targets[gmm_labels]
-            bbox_weights[pos_gt_ids] = 1
+        if (unsup[0] == True) and num_pos != 0:
+            print(f'unsup {unsup} | num_pos {num_pos}')
+
+        if num_pos > 0:   # ids
+            max_vals, max_ids = torch.max(pos_gmm_labels, dim=-1)
+            if unsup == False:  # adaptive threshold
+                pos_gt_ids_output = torch.where(max_vals >= 0.8)  
+            else:   # automatic filtering
+                tau_auto = (1 - max_vals) * 0.95 + max_vals * 0.5
+                pos_gt_ids_output = torch.where(max_vals >= tau_auto)   
+            pos_gt_ids = pos_gt_ids_output[0]   # tuple to tensor. 
+            
+            if len(pos_gt_ids) > 0:  # 이미지에 gt가 1개 이상은 있고 > 0 and max_vals >= threshold -> pred를 loss 계산에 반영할 준비가 되었다. 
+                try:    # thres를 넘은 box의 ids에 대해, 그 box의 gmm val의 idx가 [0, 1, 2, 3] 중 어디에 해당? 
+                    label_pos_ids = [ids.item() for ids in pos_gt_ids if (max_ids[ids] == 0) or (max_ids[ids] == 1)]
+                    bbox_pos_ids = [ids.item() for ids in pos_gt_ids if (max_ids[ids] == 0) or (max_ids[ids] == 2)]
+
+                except: # when same gt boxes are assigned to the predicted pos boxes
+                    label_pos_ids = [ids.item() for ids in pos_gt_ids if (max_ids[ids][0] == 0) or (max_ids[ids][0] == 1)]
+                    bbox_pos_ids = [ids.item() for ids in pos_gt_ids if (max_ids[ids][0] == 0) or (max_ids[ids][0] == 2)]
+
+                # label weight
+                labels[label_pos_ids] = pos_gt_labels[[label_pos_ids]]    # 여기도 확인해야함!
+                pos_weight = 1.0 if cfg.pos_weight <= 0 else cfg.pos_weight
+                label_weights[label_pos_ids] = pos_weight
+                if not self.reg_decoded_bbox:
+                    pos_bbox_targets = self.bbox_coder.encode(
+                        pos_bboxes, pos_gt_bboxes)
+                else:
+                    # When the regression loss (e.g. `IouLoss`, `GIouLoss`)
+                    # is applied directly on the decoded bounding boxes, both
+                    # the predicted boxes and regression targets should be with
+                    # absolute coordinate format.
+                    pos_bbox_targets = pos_gt_bboxes
+                        
+                # bbox weight
+                bbox_targets[bbox_pos_ids] = pos_bbox_targets[[bbox_pos_ids]]
+                bbox_weights[bbox_pos_ids] = 1
+                
         if num_neg > 0:
             label_weights[-num_neg:] = 1.0
 
@@ -194,6 +216,7 @@ class BBoxHead(BaseModule):
                     gt_bboxes,
                     gt_labels,
                     rcnn_train_cfg,
+                    unsup=False,
                     gmm_labels=None, 
                     concat=True):
         """Calculate the ground truth for all samples in a batch according to
@@ -245,22 +268,25 @@ class BBoxHead(BaseModule):
         pos_gt_labels_list = [res.pos_gt_labels for res in sampling_results]    # gt 갯수만큼 나옴
 
         if gmm_labels == None:
-            gmm_labels = [pos_bboxes.new_full((pos_bboxes.size(0), ),
+            pos_gmm_labels = [pos_bboxes.new_full((pos_bboxes.size(0), ),
                                 True,
                                 dtype=torch.long).bool()
                                 for pos_bboxes in pos_bboxes_list]
         else:
-            gmm_labels = [gmm[res.pos_assigned_gt_inds] for gmm, res in zip(gmm_labels, sampling_results)] 
+            pos_gmm_labels = [gmm[res.pos_assigned_gt_inds] for gmm, res in zip(gmm_labels, sampling_results)] 
 
+        unsup_list = [unsup for _ in range(len(gmm_labels))]
+        
         labels, label_weights, bbox_targets, bbox_weights = multi_apply(
             self._get_target_single,
             pos_bboxes_list,
             neg_bboxes_list,
             pos_gt_bboxes_list,
             pos_gt_labels_list,
-            gmm_labels,
+            pos_gmm_labels,
+            unsup=unsup_list,
             cfg=rcnn_train_cfg)
-
+        
         if concat:
             labels = torch.cat(labels, 0)
             label_weights = torch.cat(label_weights, 0)

@@ -7,10 +7,14 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from mmcv.runner import BaseModule, auto_fp16
+from mmcv.runner import get_dist_info
 from ..builder import HEADS, build_head, build_roi_extractor
 
 from mmdet.core.visualization import imshow_det_bboxes
-
+from torch._C._distributed_c10d import (
+    AllreduceOptions,
+    ReduceOp,
+)
 
 class BaseDetector(BaseModule, metaclass=ABCMeta):
     """Base class for detectors."""
@@ -142,6 +146,62 @@ class BaseDetector(BaseModule, metaclass=ABCMeta):
         else:
             raise NotImplementedError
 
+    def all_reduce(self, tensor, op=ReduceOp.SUM, group=None, async_op=False):
+        """
+        Reduces the tensor data across all machines in such a way that all get
+        the final result.
+
+        After the call ``tensor`` is going to be bitwise identical in all processes.
+
+        Complex tensors are supported.
+
+        Args:
+            tensor (Tensor): Input and output of the collective. The function
+                operates in-place.
+            op (optional): One of the values from
+                ``torch.distributed.ReduceOp``
+                enum.  Specifies an operation used for element-wise reductions.
+            group (ProcessGroup, optional): The process group to work on. If None,
+                the default process group will be used.
+            async_op (bool, optional): Whether this op should be an async op
+
+        Returns:
+            Async work handle, if async_op is set to True.
+            None, if not async_op or if not part of the group
+
+        Examples:
+            >>> # xdoctest: +SKIP("no rank")
+            >>> # All tensors below are of torch.int64 type.
+            >>> # We have 2 process groups, 2 ranks.
+            >>> tensor = torch.arange(2, dtype=torch.int64) + 1 + 2 * rank
+            >>> tensor
+            tensor([1, 2]) # Rank 0
+            tensor([3, 4]) # Rank 1
+            >>> dist.all_reduce(tensor, op=ReduceOp.SUM)
+            >>> tensor
+            tensor([4, 6]) # Rank 0
+            tensor([4, 6]) # Rank 1
+
+            >>> # All tensors below are of torch.cfloat type.
+            >>> # We have 2 process groups, 2 ranks.
+            >>> tensor = torch.tensor([1+1j, 2+2j], dtype=torch.cfloat) + 2 * rank * (1+1j)
+            >>> tensor
+            tensor([1.+1.j, 2.+2.j]) # Rank 0
+            tensor([3.+3.j, 4.+4.j]) # Rank 1
+            >>> dist.all_reduce(tensor, op=ReduceOp.SUM)
+            >>> tensor
+            tensor([4.+4.j, 6.+6.j]) # Rank 0
+            tensor([4.+4.j, 6.+6.j]) # Rank 1
+
+        """
+        opts = AllreduceOptions()
+        opts.reduceOp = op
+        group_size = torch.distributed.get_world_size()
+        group = torch.distributed.new_group(list(range(group_size)))
+        work = group.allreduce([tensor], opts)
+        work.wait()
+
+
     def forward_test(self, imgs, img_metas, **kwargs):
         """
         Args:
@@ -207,6 +267,72 @@ class BaseDetector(BaseModule, metaclass=ABCMeta):
         else:
             return self.forward_test(img, img_metas, **kwargs)
 
+    def all_gather_object(self, object_list, obj, group=None):
+        import contextlib
+        import io
+        import logging
+        import os
+        import pickle
+        import time
+        import warnings
+        from datetime import timedelta
+        from typing import Callable, Dict, Optional, Tuple, Union
+        
+        _pickler = pickle.Pickler
+        _unpickler = pickle.Unpickler
+        
+        def _tensor_to_object(tensor, tensor_size):
+            buf = tensor.numpy().tobytes()[:tensor_size]
+            return _unpickler(io.BytesIO(buf)).load()
+
+        def _object_to_tensor(obj):
+            f = io.BytesIO()
+            _pickler(f).dump(obj)
+            byte_storage = torch.ByteStorage.from_buffer(f.getvalue())  # type: ignore[attr-defined]
+            # Do not replace `torch.ByteTensor` or `torch.LongTensor` with torch.tensor and specifying dtype.
+            # Otherwise, it will casue 100X slowdown.
+            # See: https://github.com/pytorch/pytorch/issues/65696
+            byte_tensor = torch.ByteTensor(byte_storage)
+            local_size = torch.LongTensor([byte_tensor.numel()])
+            return byte_tensor, local_size
+
+
+        input_tensor, local_size = _object_to_tensor(obj)
+        current_device = torch.device("cuda", torch.cuda.current_device())
+        input_tensor = input_tensor.to(current_device)
+        local_size = local_size.to(current_device)
+
+        group_size = torch.distributed.get_world_size()
+        object_sizes_tensor = torch.zeros(
+            group_size, dtype=torch.long, device=current_device
+        )
+        object_size_list = [
+            object_sizes_tensor[i].unsqueeze(dim=0) for i in range(group_size)
+        ]
+        group = torch.distributed.new_group(list(range(group_size)))
+        torch.distributed.all_gather(object_size_list, local_size, group=group)
+        max_object_size = int(max(object_size_list).item())  # type: ignore[type-var]
+        # Resize tensor to max size across all ranks.
+        input_tensor.resize_(max_object_size)
+        coalesced_output_tensor = torch.empty(
+            max_object_size * group_size, dtype=torch.uint8, device=current_device
+        )
+
+        output_tensors = [
+            coalesced_output_tensor[max_object_size * i : max_object_size * (i + 1)]
+            for i in range(group_size)
+        ]
+        torch.distributed.all_gather(output_tensors, input_tensor, group=group)
+
+        for i, tensor in enumerate(output_tensors):
+            tensor = tensor.type(torch.uint8)
+            if tensor.device != torch.device("cpu"):
+                tensor = tensor.cpu()
+
+            tensor_size = object_size_list[i]
+            output = _tensor_to_object(tensor, tensor_size)
+            object_list[i] = output
+
     def _parse_losses(self, losses):
         """Parse the raw outputs (losses) of the network.
 
@@ -252,6 +378,57 @@ class BaseDetector(BaseModule, metaclass=ABCMeta):
 
         return loss, log_vars
 
+    # def _parse_losses(self, losses):
+    #     """Parse the raw outputs (losses) of the network.
+
+    #     Args:
+    #         losses (dict): Raw output of the network, which usually contain
+    #             losses and other necessary information.
+
+    #     Returns:
+    #         tuple[Tensor, dict]: (loss, log_vars), loss is the loss tensor \
+    #             which may be a weighted sum of all losses, log_vars contains \
+    #             all the variables to be sent to the logger.
+    #     """
+    #     rank, world_size = get_dist_info()
+    #     log_vars = OrderedDict()
+    #     for loss_name, loss_value in losses.items():
+    #         if isinstance(loss_value, torch.Tensor):
+    #             log_vars[loss_name] = loss_value.mean()
+    #         elif isinstance(loss_value, list):
+    #             log_vars[loss_name] = sum(_loss.mean() for _loss in loss_value)
+    #         else:
+    #             raise TypeError(
+    #                 f'{loss_name} is not a tensor or list of tensors')
+
+    #     loss = sum(_value for _key, _value in log_vars.items()
+    #                if 'loss' in _key)
+
+    #     '''
+    #     # If the loss_vars has different length, GPUs will wait infinitely
+    #     if dist.is_available() and dist.is_initialized():
+    #         log_var_length = torch.tensor(len(log_vars), device=loss.device)
+    #         dist.all_reduce(log_var_length)
+    #         message = (f'rank {dist.get_rank()}' +
+    #                    f' len(log_vars): {len(log_vars)}' + ' keys: ' +
+    #                    ','.join(log_vars.keys()))
+    #         assert log_var_length == len(log_vars) * dist.get_world_size(), \
+    #             'loss log variables are different across GPUs!\n' + message
+    #     '''
+        
+    #     log_vars['loss'] = loss
+
+    #     for idx, (loss_name, loss_value) in enumerate(log_vars.items()):
+    #         # reduce loss when distributed training
+    #         if dist.is_available() and dist.is_initialized():
+    #             loss_value = loss_value.item()
+    #             num_total_data = [None for _ in range(world_size)]
+    #             self.all_gather_object(num_total_data, loss_value)
+    #             result_loss_value = sum(num_total_data) / world_size
+    #             # self.all_reduce(loss_value.div_(dist.get_world_size()), op=dist.ReduceOp.SUM)
+    #         log_vars[loss_name] = result_loss_value
+    #     return loss, log_vars
+
     def train_step(self, data, optimizer):
         """The iteration step during training.
 
@@ -279,9 +456,9 @@ class BaseDetector(BaseModule, metaclass=ABCMeta):
                   DDP, it means the batch size on each GPU), which is used for
                   averaging the logs.
         """
-        losses = self(**data)       # img_metas, img, gt_bboxes, gt_labels
+        losses = self(**data)       # img_metas, img, gt_bboxes, gt_labels  -> ssod/models/soft_teacher.py forward_train
+        rank, world_size = get_dist_info()
         loss, log_vars = self._parse_losses(losses)
-
         outputs = dict(
             loss=loss, log_vars=log_vars, num_samples=len(data['img_metas']))
 

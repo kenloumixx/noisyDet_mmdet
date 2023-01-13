@@ -181,7 +181,7 @@ class CocoDataset(CustomDataset):
                 gt_masks_ann.append(ann.get('segmentation', None))            
                 box_ids.append(ann['id'])
 
-            gmm_labels.append(ann.get('gmm_labels', True))
+            gmm_labels.append(ann.get('gmm_labels', np.array([-1., -1., -1., -1.])))      # 처음 validation할 때는 없으니까 ㅇㅈ. 근데 train할 때는 있어야 함 ㅎㅎ
 
 
         if gt_bboxes:

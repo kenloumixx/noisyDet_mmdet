@@ -96,6 +96,7 @@ class TwoStageDetector(BaseDetector):
                       gt_bboxes_ignore=None,
                       gt_masks=None,
                       proposals=None,
+                      unsup=False,
                       **kwargs):
         """
         Args:
@@ -145,11 +146,10 @@ class TwoStageDetector(BaseDetector):
         else:
             proposal_list = proposals
 
-        # gmm_labels이 주어진다면..?
         roi_losses = self.roi_head.forward_train(x, img_metas, proposal_list,
-                                                 gt_bboxes, gt_labels, gmm_labels,
-                                                 gt_bboxes_ignore, gt_masks,
-                                                 **kwargs)
+                                                 gt_bboxes, gt_labels, gmm_labels, unsup=unsup,
+                                                 gt_bboxes_ignore=gt_bboxes_ignore, gt_masks=gt_masks,
+                                                 **kwargs)  # standard_roi_head.py -> def forward_train
         losses.update(roi_losses)
         return losses
 

@@ -25,7 +25,11 @@ def to_tensor(data):
     elif isinstance(data, np.ndarray):
         return torch.from_numpy(data)
     elif isinstance(data, Sequence) and not mmcv.is_str(data):
-        return torch.tensor(data)
+        try:
+            return torch.tensor(data)
+        except:
+            print(f'data type {type(data)} | isinstance? {isinstance(data, Sequence)} | data {[per_data for per_data in data]}')
+            exit()
     elif isinstance(data, int):
         return torch.LongTensor([data])
     elif isinstance(data, float):
@@ -233,6 +237,7 @@ class DefaultFormatBundle:
             if key not in results:
                 continue
             results[key] = DC(to_tensor(results[key]))
+
         if 'gt_masks' in results:
             results['gt_masks'] = DC(
                 results['gt_masks'],
