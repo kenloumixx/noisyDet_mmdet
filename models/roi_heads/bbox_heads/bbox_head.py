@@ -57,7 +57,8 @@ class BBoxHead(BaseModule):
         self.bbox_coder = build_bbox_coder(bbox_coder)
         self.loss_cls = build_loss(loss_cls)
         self.loss_bbox = build_loss(loss_bbox)
-
+        self.log_file = open('compare_sup_unsup.txt', 'w')
+        self.log_file.close()
         in_channels = self.in_channels
         if self.with_avg_pool:
             self.avg_pool = nn.AvgPool2d(self.roi_feat_size)
@@ -167,8 +168,9 @@ class BBoxHead(BaseModule):
         bbox_weights = pos_bboxes.new_zeros(num_samples, 4)
 
         if (unsup[0] == True) and num_pos != 0:
-            print(f'unsup {unsup} | num_pos {num_pos}')
-
+            self.log_file.write(f'unsup and num_pose {num_pos}')
+            self.log_file.close()
+            
         if num_pos > 0:   # ids
             max_vals, max_ids = torch.max(pos_gmm_labels, dim=-1)
             if unsup == False:  # adaptive threshold
