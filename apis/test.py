@@ -281,10 +281,16 @@ def gmm_multi_gpu_test(model, data_loader, tmpdir=None, gmm=None, gpu_collect=Fa
     logits_list = []
     gt_labels_list = []
 
+    i = 0
     for i, data in enumerate(data_loader):
         with torch.no_grad():
+            try:
+                box_ids, cls_loss, cls_labels, bbox_loss, logits = model(return_loss=return_loss, gmm=gmm, **data)     # TODO rescale loss 옵션을 받아서.. 
             box_ids, cls_loss, cls_labels, bbox_loss, logits = model(return_loss=return_loss, gmm=gmm, **data)     # TODO rescale loss 옵션을 받아서.. 
-
+                box_ids, cls_loss, cls_labels, bbox_loss, logits = model(return_loss=return_loss, gmm=gmm, **data)     # TODO rescale loss 옵션을 받아서.. 
+            except:
+                i += 1
+                
         loss_cls_list.extend(cls_loss)
         loss_bbox_list.extend(bbox_loss)
         logits_list.extend(logits)
@@ -297,6 +303,8 @@ def gmm_multi_gpu_test(model, data_loader, tmpdir=None, gmm=None, gpu_collect=Fa
             for _ in range(batch_size * world_size):
                 prog_bar.update()
 
+    print(f'rank {rank} | i {i}')   # 14725     # 여기는 학습이 아니라 eval을 뽑는 상황. -> 근데.. 쟤네도 어쨋든 이거로 train하는거 아님..? 왜 다르지..
+    
     loss_cls_tensor = torch.stack(loss_cls_list)
     loss_bbox_tensor = torch.stack(loss_bbox_list)
     logits_tensor = torch.stack(logits_list)
@@ -350,12 +358,18 @@ def multi_gpu_test(model, data_loader, tmpdir=None, gmm=None, gpu_collect=False,
     time.sleep(2)  # This line can prevent deadlock problem in some cases.
     for i, data in enumerate(data_loader):
         with torch.no_grad():
-            result = model(return_loss=False, rescale=True, gmm=None, **data)
-            # result = model(return_loss=return_loss, gmm=gmm, **data)
+            result = model(return_loss=False, rescale=True, **data)
             # encode mask results
             if isinstance(result[0], tuple):
                 result = [(bbox_results, encode_mask_results(mask_results))
                           for bbox_results, mask_results in result]
+            # This logic is only used in panoptic segmentation test.
+            elif isinstance(result[0], dict) and 'ins_results' in result[0]:
+                for j in range(len(result)):
+                    bbox_results, mask_results = result[j]['ins_results']
+                    result[j]['ins_results'] = (
+                        bbox_results, encode_mask_results(mask_results))
+
         results.extend(result)
 
         if rank == 0:

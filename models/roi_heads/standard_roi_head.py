@@ -125,7 +125,7 @@ class StandardRoIHead(BaseRoIHead, BBoxTestMixin, MaskTestMixin):
             x[:self.bbox_roi_extractor.num_inputs], rois)
         if self.with_shared_head:
             bbox_feats = self.shared_head(bbox_feats)
-        cls_score, bbox_pred = self.bbox_head(bbox_feats)
+        cls_score, bbox_pred = self.bbox_head(bbox_feats)   # 여기서 bbox_pred가 아예 안나오는건가..?
 
         bbox_results = dict(
             cls_score=cls_score, bbox_pred=bbox_pred, bbox_feats=bbox_feats)
@@ -151,9 +151,9 @@ class StandardRoIHead(BaseRoIHead, BBoxTestMixin, MaskTestMixin):
                             img_metas):
         """Run forward function and calculate loss for box head in training."""
         gt_bboxes_rois = bbox2roi([gt_box_roi for gt_box_roi in gt_bboxes])
-        gt_bbox_results = self._bbox_forward(x, gt_bboxes_rois) # sup은 GT중에서도 clean인 애들만!
+        gt_bbox_results = self._bbox_forward(x, gt_bboxes_rois) 
         cls_loss, cls_labels, bbox_loss, logits = self.bbox_head.gmm_loss(gt_bbox_results['cls_score'],
-                               gt_bbox_results['bbox_pred'], gt_bboxes_rois, gt_labels, gt_bboxes)
+                            gt_bbox_results['bbox_pred'], gt_bboxes_rois, gt_labels, gt_bboxes)
         return cls_loss, cls_labels, bbox_loss, logits
         # rois = bbox2roi([res.bboxes for res in sampling_results])   # pos, neg를 둘다 붙임  -> 총 512
         # bbox_results = self._bbox_forward(x, rois)
