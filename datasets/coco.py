@@ -186,9 +186,8 @@ class CocoDataset(CustomDataset):
 
             gmm_labels.append(ann.get('gmm_labels', np.array([0.4, 0.3, 0.2, 0.1])))      # 처음 validation할 때는 없으니까 ㅇㅈ. 근데 train할 때는 있어야 함 ㅎㅎ
             GMM_GT_idx.append(ann.get('GMM_GT_idx', np.array([999])))      # 처음 validation할 때는 없으니까 ㅇㅈ. 근데 train할 때는 있어야 함 ㅎㅎ
-            n_loc.append(ann.get('n_loc', True))      # 처음 validation할 때는 없으니까 ㅇㅈ. 근데 train할 때는 있어야 함 ㅎㅎ
-            n_clf.append(ann.get('n_clf', True))      # 처음 validation할 때는 없으니까 ㅇㅈ. 근데 train할 때는 있어야 함 ㅎㅎ
-
+            n_loc.append(ann.get('n_loc'))      
+            n_clf.append(ann.get('n_clf'))      
 
         if gt_bboxes:
             gt_bboxes = np.array(gt_bboxes, dtype=np.float32)
