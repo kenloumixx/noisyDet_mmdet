@@ -131,6 +131,10 @@ class StandardRoIHead(BaseRoIHead, BBoxTestMixin, MaskTestMixin):
             cls_score=cls_score, bbox_pred=bbox_pred, bbox_feats=bbox_feats)
         return bbox_results
 
+
+
+
+
     def _bbox_forward_train(self, x, sampling_results, gt_bboxes, gt_labels,
                             gmm_labels, unsup=False):
         """Run forward function and calculate loss for box head in training."""
@@ -146,6 +150,12 @@ class StandardRoIHead(BaseRoIHead, BBoxTestMixin, MaskTestMixin):
 
         bbox_results.update(loss_bbox=loss_bbox)
         return bbox_results
+
+
+
+
+
+
 
     def _bbox_forward_gmm(self, x, sampling_results, gt_bboxes, gt_labels,
                             img_metas):

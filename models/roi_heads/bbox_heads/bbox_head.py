@@ -94,6 +94,7 @@ class BBoxHead(BaseModule):
                     dict(
                         type='Normal', std=0.001, override=dict(name='fc_reg'))
                 ]
+        self.f = open('debug.txt', 'w')
 
     @property
     def custom_cls_channels(self):
@@ -158,43 +159,58 @@ class BBoxHead(BaseModule):
         num_pos = pos_bboxes.size(0)
         num_neg = neg_bboxes.size(0)
         num_samples = num_pos + num_neg
+        
+        rank, _ = get_dist_info()
+
         # original implementation uses new_zeros since BG are set to be 0
         # now use empty & fill because BG cat_id = num_classes,
         # FG cat_id = [0, num_classes-1]
+
         labels = pos_bboxes.new_full((num_samples, ),
-                                     self.num_classes,
-                                     dtype=torch.long)
+                                    self.num_classes,
+                                    dtype=torch.long)
         label_weights = pos_bboxes.new_zeros(num_samples)
         bbox_targets = pos_bboxes.new_zeros(num_samples, 4)
         bbox_weights = pos_bboxes.new_zeros(num_samples, 4)
 
-        if (unsup[0] == True) and num_pos != 0:
-            rank, world_size = get_dist_info()
-            if rank == 0:
-                self.log_file.write(f'unsup and num_pose {num_pos}\n')
-            
-        if num_pos > 0:   # ids
-            max_vals, max_ids = torch.max(pos_gmm_labels, dim=-1)
-            if unsup == False:  # adaptive threshold
-                pos_gt_ids_output = torch.where(max_vals >= 0.8)  
-            else:   # automatic filtering
-                tau_auto = (1 - max_vals) * 0.95 + max_vals * 0.5
-                pos_gt_ids_output = torch.where(max_vals >= tau_auto)   
-            pos_gt_ids = pos_gt_ids_output[0]   # tuple to tensor. 
-            
-            if len(pos_gt_ids) > 0:  # 이미지에 gt가 1개 이상은 있고 > 0 and max_vals >= threshold -> pred를 loss 계산에 반영할 준비가 되었다. 
-                try:    # thres를 넘은 box의 ids에 대해, 그 box의 gmm val의 idx가 [0, 1, 2, 3] 중 어디에 해당? 
-                    label_pos_ids = [ids.item() for ids in pos_gt_ids if (max_ids[ids] == 0) or (max_ids[ids] == 1)]
-                    bbox_pos_ids = [ids.item() for ids in pos_gt_ids if (max_ids[ids] == 0) or (max_ids[ids] == 2)]
+        if unsup == False:  # sup일 때는 그대로 
+            if len(pos_gt_bboxes) > 0 and num_pos > 0 and len(pos_gmm_labels)> 0 and num_samples > 0:   # 예측된 것도 1개 이상이고 gt도 1개 이상일 때, 그리고 gmm label도 때마침 잘 들어갔을 때       
+                max_vals, max_ids = torch.max(pos_gmm_labels, dim=-1)
+                
+                pos_gt_ids_output = torch.where(max_vals >= 0.8)    # 아하.. 어차피 여기서 -100인 애들은 무조건 걸러진다...!!
+                pos_gt_ids = pos_gt_ids_output[0]   # tuple to tensor. 
+                
+                if len(pos_gt_ids) > 0:  
+                    label_pos_ids = [ids for ids in pos_gt_ids.tolist() if (max_ids[ids] == 0) or (max_ids[ids] == 1)]
+                    bbox_pos_ids = [ids for ids in pos_gt_ids.tolist() if (max_ids[ids] == 0) or (max_ids[ids] == 2)]
 
-                except: # when same gt boxes are assigned to the predicted pos boxes
-                    label_pos_ids = [ids.item() for ids in pos_gt_ids if (max_ids[ids][0] == 0) or (max_ids[ids][0] == 1)]
-                    bbox_pos_ids = [ids.item() for ids in pos_gt_ids if (max_ids[ids][0] == 0) or (max_ids[ids][0] == 2)]
+                    labels[label_pos_ids] = pos_gt_labels[label_pos_ids]    # 여기도 확인해야함!    # <- 여기서 걸리는 것이었구나! 
 
-                # label weight
-                labels[label_pos_ids] = pos_gt_labels[[label_pos_ids]]    # 여기도 확인해야함!
+                    pos_weight = 1.0 if cfg.pos_weight <= 0 else cfg.pos_weight
+                    label_weights[label_pos_ids] = pos_weight
+                    if not self.reg_decoded_bbox:
+                        pos_bbox_targets = self.bbox_coder.encode(
+                            pos_bboxes, pos_gt_bboxes)
+                    else:
+                        # When the regression loss (e.g. `IouLoss`, `GIouLoss`)
+                        # is applied directly on the decoded bounding boxes, both
+                        # the predicted boxes and regression targets should be with
+                        # absolute coordinate format.
+                        pos_bbox_targets = pos_gt_bboxes
+                            
+                    # bbox weight
+                    bbox_targets[bbox_pos_ids] = pos_bbox_targets[bbox_pos_ids]
+                    bbox_weights[bbox_pos_ids] = 1                
+            if num_neg > 0:
+                label_weights[-num_neg:] = 1.0
+
+            return labels, label_weights, bbox_targets, bbox_weights
+
+        else:   # unsup일 때는 SoftTeacher처럼
+            if num_pos > 0:
+                labels[:num_pos] = pos_gt_labels
                 pos_weight = 1.0 if cfg.pos_weight <= 0 else cfg.pos_weight
-                label_weights[label_pos_ids] = pos_weight
+                label_weights[:num_pos] = pos_weight
                 if not self.reg_decoded_bbox:
                     pos_bbox_targets = self.bbox_coder.encode(
                         pos_bboxes, pos_gt_bboxes)
@@ -204,16 +220,14 @@ class BBoxHead(BaseModule):
                     # the predicted boxes and regression targets should be with
                     # absolute coordinate format.
                     pos_bbox_targets = pos_gt_bboxes
-                        
-                # bbox weight
-                bbox_targets[bbox_pos_ids] = pos_bbox_targets[[bbox_pos_ids]]
-                bbox_weights[bbox_pos_ids] = 1
-                
-        if num_neg > 0:
-            label_weights[-num_neg:] = 1.0
+                bbox_targets[:num_pos, :] = pos_bbox_targets
+                bbox_weights[:num_pos, :] = 1
+            if num_neg > 0:
+                label_weights[-num_neg:] = 1.0
 
-        return labels, label_weights, bbox_targets, bbox_weights
+            return labels, label_weights, bbox_targets, bbox_weights
 
+            
 
     def get_targets(self,
                     sampling_results,
@@ -271,14 +285,30 @@ class BBoxHead(BaseModule):
         pos_gt_bboxes_list = [res.pos_gt_bboxes for res in sampling_results]    # gt 갯수만큼 나옴  -> 19개? 21개?
         pos_gt_labels_list = [res.pos_gt_labels for res in sampling_results]    # gt 갯수만큼 나옴
 
-        if gmm_labels == None:
-            pos_gmm_labels = [pos_bboxes.new_full((pos_bboxes.size(0), ),
-                                True,
-                                dtype=torch.long).bool()
-                                for pos_bboxes in pos_bboxes_list]
-        else:
-            pos_gmm_labels = [gmm[res.pos_assigned_gt_inds] for gmm, res in zip(gmm_labels, sampling_results)] 
+        # if gmm_labels == None:              # TODO: 여기서 gmm label이 아마 섞여서 들어올 예정..!
+        #     self.f.write(f'\ngmm label None?\n')
+        #     pos_gmm_labels = [pos_bboxes.new_full((pos_bboxes.size(0), ),
+        #                         True,
+        #                         dtype=torch.long).bool()
+        #                         for pos_bboxes in pos_bboxes_list]
+        #     self.f.write(f'\pos_gmm_labels {len(pos_gmm_labels)} | {pos_gmm_labels[0].shape}\n')
 
+        # else:
+        #     # TODO : check len gmm labels and sampling_results  
+        pos_gmm_labels = [gmm[res.pos_assigned_gt_inds] if len(res.pos_assigned_gt_inds) > 0  \
+                            else torch.tensor([], dtype=torch.float64) for gmm, res in zip(gmm_labels, sampling_results)]   # gmm_label 갯수는 당연히 GT개밖에 없지만, pos_assigned_gt_inds에 맞게 여러번 중복해서 뽑힘. 즉, GT 자리에 있는 애들.
+                
+        # self.f.write(f'\n pos_gmm_labels, {unsup} | {pos_gmm_labels}\n')
+        # pos_gmm_labels = []
+
+        # pos_gmm_labels, [tensor([], dtype=torch.float64), tensor([], dtype=torch.float64), tensor([], dtype=torch.float64), tensor([], dtype=torch.float64), tensor([], dtype=torch.float64)]
+
+        # for gmm, res in zip(gmm_labels, sampling_results):
+        #     if len(res.pos_assigned_gt_inds) > 0:
+        #         pos_gmm_labels.append(gmm[res.pos_assigned_gt_inds])
+        #     else:
+        #         pos_gmm_labels.append(torch.tensor([], dtype=torch.float64))
+            
         unsup_list = [unsup for _ in range(len(gmm_labels))]
         
         labels, label_weights, bbox_targets, bbox_weights = multi_apply(
@@ -291,7 +321,7 @@ class BBoxHead(BaseModule):
             unsup=unsup_list,
             cfg=rcnn_train_cfg)
         
-        if concat:
+        if concat:                
             labels = torch.cat(labels, 0)
             label_weights = torch.cat(label_weights, 0)
             bbox_targets = torch.cat(bbox_targets, 0)

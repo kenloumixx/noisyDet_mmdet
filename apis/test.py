@@ -265,45 +265,45 @@ def gmm_multi_gpu_test(model, data_loader, tmpdir=None, gmm=None, gpu_collect=Fa
     model.eval()
     dataset = data_loader.dataset
     
-    # num_data = 36334  # 원래는 85xxx어쩌고였었음
-    num_bbox = len(dataset.coco.anns)
-    num_cls = len(dataset.coco.dataset['categories'])
+    # num_bbox = len(dataset.coco.anns)
+    # num_cls = len(dataset.coco.dataset['categories'])
 
     rank, world_size = get_dist_info()
     if rank == 0:
-        prog_bar = mmcv.ProgressBar(len(dataset))
+        prog_bar = mmcv.ProgressBar(len(dataset))   # 117805
     time.sleep(2)  # This line can prevent deadlock problem in some cases.
-
+    del dataset
 
     bbox_ids_list = []
     loss_cls_list = []
     loss_bbox_list = []
     logits_list = []
     gt_labels_list = []
+    
+    # if rank == 0:
+    #     print(f'len(data_loader {len(dataset)}')
 
-    i = 0
-    for i, data in enumerate(data_loader):
+    # num_fall = 0
+
+    for i, data in enumerate(data_loader): # model의 어디에서 걸리는지를 보면.. data에서 걸리더라구..
         with torch.no_grad():
             try:
                 box_ids, cls_loss, cls_labels, bbox_loss, logits = model(return_loss=return_loss, gmm=gmm, **data)     # TODO rescale loss 옵션을 받아서.. 
-            box_ids, cls_loss, cls_labels, bbox_loss, logits = model(return_loss=return_loss, gmm=gmm, **data)     # TODO rescale loss 옵션을 받아서.. 
-                box_ids, cls_loss, cls_labels, bbox_loss, logits = model(return_loss=return_loss, gmm=gmm, **data)     # TODO rescale loss 옵션을 받아서.. 
+                loss_cls_list.extend(cls_loss)
+                loss_bbox_list.extend(bbox_loss)
+                logits_list.extend(logits)
+                gt_labels_list.extend(cls_labels)
+                bbox_ids_list.extend(box_ids)
             except:
-                i += 1
-                
-        loss_cls_list.extend(cls_loss)
-        loss_bbox_list.extend(bbox_loss)
-        logits_list.extend(logits)
-        gt_labels_list.extend(cls_labels)
-        bbox_ids_list.extend(box_ids)
+                pass
+                # num_fall += 1
+            del data
 
         if rank == 0:
             if gmm: batch_size = 1
             else: batch_size = data['img'].size(0)
             for _ in range(batch_size * world_size):
                 prog_bar.update()
-
-    print(f'rank {rank} | i {i}')   # 14725     # 여기는 학습이 아니라 eval을 뽑는 상황. -> 근데.. 쟤네도 어쨋든 이거로 train하는거 아님..? 왜 다르지..
     
     loss_cls_tensor = torch.stack(loss_cls_list)
     loss_bbox_tensor = torch.stack(loss_bbox_list)
@@ -320,12 +320,25 @@ def gmm_multi_gpu_test(model, data_loader, tmpdir=None, gmm=None, gpu_collect=Fa
     data_len = [len(loss_cls_tensor)]
     all_gather_object(num_total_data, data_len)
     max_num = max(num_total_data)  
+
+    # # 몇개가 누락되는지 확인하기 
+    # event_set_list = [0 for _ in range(world_size)]
+    # all_gather_object(event_set_list, [num_fall])
+
+    # print(f'num fall {event_set_list} | sum {event_set_list}')
     
     total_bbox_ids_tensor = total_tensor(bbox_ids_tensor, max_num)
     total_loss_cls_tensor = total_tensor(loss_cls_tensor, max_num)
     total_loss_bbox_tensor = total_tensor(loss_bbox_tensor, max_num)
     total_logits_tensor = total_tensor(logits_tensor, max_num)
     total_gt_labels_tensor = total_tensor(gt_labels_tensor, max_num)
+    
+    # if rank == 0:
+    #     print(f'len(data_loader after {len(total_gt_labels_tensor)}')
+    del bbox_ids_list, loss_cls_list, loss_bbox_list, logits_list, gt_labels_list
+    del bbox_ids_tensor, loss_cls_tensor, loss_bbox_tensor, logits_tensor, gt_labels_tensor
+    del data_loader # 정 안되면 얘 없애기..
+    
     return total_bbox_ids_tensor, total_loss_cls_tensor, total_loss_bbox_tensor, total_logits_tensor, total_gt_labels_tensor
 
 

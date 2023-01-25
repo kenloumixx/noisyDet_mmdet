@@ -22,6 +22,8 @@ class GMMCOCO(CustomDataset):
         self.gmm_labels = splitnet_data[4]
         self.logits_delta = splitnet_data[5]
         self.loss_bbox_delta = splitnet_data[6]
+        # self.GMM_GT_idx = splitnet_data[7]
+
 
         self.test_mode = test_mode  # 의미없음. 그냥 계속 test_mode=False로 두기
         self.data_infos = splitnet_data
@@ -65,6 +67,7 @@ class GMMCOCO(CustomDataset):
         gmm_labels = self.gmm_labels[idx]
         logits_delta = self.logits_delta[idx]
         loss_bbox_delta = self.loss_bbox_delta[idx]
+        # GMM_GT_idx = self.GMM_GT_idx[idx]
 
         data = dict(logits=logits,
                     cls_labels=cls_labels,
@@ -72,6 +75,7 @@ class GMMCOCO(CustomDataset):
                     box_ids=box_ids,
                     logits_delta=logits_delta,
                     loss_bbox_delta=loss_bbox_delta,
+                    # GMM_GT_idx=GMM_GT_idx,
                     gmm_labels=gmm_labels)
         return self.pipeline(data)
 

@@ -254,6 +254,9 @@ class LoadAnnotations:
         ann_info = results['ann_info']
         results['gt_bboxes'] = ann_info['bboxes'].copy()
         results['gmm_labels'] = ann_info.get('gmm_labels').copy()
+        results['GMM_GT_idx'] = ann_info.get('GMM_GT_idx').copy()
+        results['n_loc'] = ann_info.get('n_loc').copy()
+        results['n_clf'] = ann_info.get('n_clf').copy()
         results['box_ids'] = ann_info.get('box_ids').copy()
 
         if self.denorm_bbox:

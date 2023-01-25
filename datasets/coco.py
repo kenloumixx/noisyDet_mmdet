@@ -159,6 +159,9 @@ class CocoDataset(CustomDataset):
         gt_bboxes_ignore = []
         gt_masks_ann = []
         gmm_labels = []
+        GMM_GT_idx = []
+        n_loc = []
+        n_clf = []
         box_ids = []
         for i, ann in enumerate(ann_info):
             if ann.get('ignore', False):
@@ -181,16 +184,31 @@ class CocoDataset(CustomDataset):
                 gt_masks_ann.append(ann.get('segmentation', None))            
                 box_ids.append(ann['id'])
 
-            gmm_labels.append(ann.get('gmm_labels', np.array([-1., -1., -1., -1.])))      # 처음 validation할 때는 없으니까 ㅇㅈ. 근데 train할 때는 있어야 함 ㅎㅎ
+            gmm_labels.append(ann.get('gmm_labels', np.array([0.4, 0.3, 0.2, 0.1])))      # 처음 validation할 때는 없으니까 ㅇㅈ. 근데 train할 때는 있어야 함 ㅎㅎ
+            GMM_GT_idx.append(ann.get('GMM_GT_idx', np.array([999])))      # 처음 validation할 때는 없으니까 ㅇㅈ. 근데 train할 때는 있어야 함 ㅎㅎ
+            n_loc.append(ann.get('n_loc', True))      # 처음 validation할 때는 없으니까 ㅇㅈ. 근데 train할 때는 있어야 함 ㅎㅎ
+            n_clf.append(ann.get('n_clf', True))      # 처음 validation할 때는 없으니까 ㅇㅈ. 근데 train할 때는 있어야 함 ㅎㅎ
+
 
         if gt_bboxes:
             gt_bboxes = np.array(gt_bboxes, dtype=np.float32)
             gt_labels = np.array(gt_labels, dtype=np.int64)
             box_ids = np.array(box_ids, dtype=np.int64)
+            gmm_labels = np.array(gmm_labels, dtype=np.float32)
+            GMM_GT_idx = np.array(GMM_GT_idx, dtype=np.int64)
+            n_loc = np.array(n_loc, dtype=np.int64)
+            n_clf = np.array(n_clf, dtype=np.int64)
+
+
         else:
             gt_bboxes = np.zeros((0, 4), dtype=np.float32)
             gt_labels = np.array([], dtype=np.int64)
             box_ids = np.array([], dtype=np.int64)
+            gmm_labels = np.array([], dtype=np.float32)
+            GMM_GT_idx = np.array([], dtype=np.int64)
+            n_loc = np.array([], dtype=np.int64)
+            n_clf = np.array([], dtype=np.int64)
+
 
         if gt_bboxes_ignore:
             gt_bboxes_ignore = np.array(gt_bboxes_ignore, dtype=np.float32)
@@ -199,12 +217,6 @@ class CocoDataset(CustomDataset):
 
         seg_map = img_info['filename'].rsplit('.', 1)[0] + self.seg_suffix
 
-        try:
-            assert len(gt_labels) == len(box_ids)
-        except:
-            print(f'filename {img_info["filename"]}')
-            exit()
-
         ann = dict(
             bboxes=gt_bboxes,
             labels=gt_labels,
@@ -212,6 +224,9 @@ class CocoDataset(CustomDataset):
             masks=gt_masks_ann,
             seg_map=seg_map,
             gmm_labels=gmm_labels,
+            GMM_GT_idx=GMM_GT_idx,
+            n_loc=n_loc,
+            n_clf=n_clf,
             box_ids=box_ids,
         )
         return ann

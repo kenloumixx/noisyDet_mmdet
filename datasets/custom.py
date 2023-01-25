@@ -127,6 +127,12 @@ class CustomDataset(Dataset):
             # set group flag for the sampler
             self._set_group_flag()
 
+        self.ignore = 0
+        self.inter_w_mul_inter_h = 0
+        self.area = 0
+        self.category_id = 0
+        self.no_gt_bboxes = 0
+
         # processing pipeline
         self.pipeline = Compose(pipeline)
 
